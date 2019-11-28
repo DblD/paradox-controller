@@ -21,7 +21,7 @@
 #define mqttServerAddress "127.0.0.1"
 #define mqttServerPort "1883"
 #define mqttUsername "secretUser"
-#define mqttPassword "sercretPass"
+#define mqttPassword "secretPass"
 #define serverHostname "Paradox"
 
 #define PROPERTY_MQTT_SERVER_ADDRESS "mqtt_server_address"
@@ -183,6 +183,7 @@ const String mqttTopicAction2 = "paradox/action/2";
 const String mqttTopicEventZone = "paradox/event/zone/";
 const String mqttTopicTriggerZone = "paradox/event/trigger_zone";
 const String mqttTopicAlarmStatus = "paradox/alarm_status/";
+const String mqttTopicLog = "paradox/log";
 
 WiFiClient wifiClient;
 PubSubClient client(wifiClient);
@@ -755,6 +756,9 @@ void flushSerialBuffer() {
 
 void trc(String msg) {
   // Serial.println(msg);
+    if (client.connected()) {
+        sendMQTT(mqttTopicLog, msg);
+    }
 }
 
 void blink(int duration) {

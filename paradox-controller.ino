@@ -23,11 +23,14 @@
 #define mqttUsername "secretUser"
 #define mqttPassword "secretPass"
 #define serverHostname "Paradox"
+#define alarmPin "0000"
 
 #define PROPERTY_MQTT_SERVER_ADDRESS "mqtt_server_address"
 #define PROPERTY_MQTT_SERVER_PORT "mqtt_server_port"
 #define PROPERTY_MQTT_USERNAME "mqtt_username"
 #define PROPERTY_MQTT_PASSWORD "mqtt_password"
+#define PROPERTY_ALARM_PIN "alarm_pin"
+#define PROPERTY_FIRMWARE "firmware"
 
 const byte COMMAND_START_COMMUNICATION = 0x5f;
 const byte COMMAND_INITIALISE_COMMUNICATION = 0x00;
@@ -191,6 +194,8 @@ PubSubClient client(wifiClient);
 bool shouldSaveConfig = false;
 bool panelInitialised = false;
 bool pannelConnected = false;
+byte firmware = SOURCE_ID_NEWARE_DIRECT; 
+
 
 long lastReconnectAttempt = 0;
 
@@ -225,6 +230,7 @@ void setupWiFi() {
   WiFiManagerParameter mqttPort(PROPERTY_MQTT_SERVER_PORT, "MQTT Port", mqttServerPort, 6);
   WiFiManagerParameter mqttUser(PROPERTY_MQTT_USERNAME, "MQTT Username", mqttUsername, 40);
   WiFiManagerParameter mqttPass(PROPERTY_MQTT_PASSWORD, "MQTT Password", mqttPassword, 40);
+  WiFiManagerParameter alarmPinParam(PROPERTY_ALARM_PIN, "Alarm PIN", alarmPin, 4);
 
 
   WiFiManager wifiManager;
@@ -244,6 +250,7 @@ void setupWiFi() {
   wifiManager.addParameter(&mqttPort);
   wifiManager.addParameter(&mqttUser);
   wifiManager.addParameter(&mqttPass);
+  wifiManager.addParameter(&alarmPinParam);
 
   if (!wifiManager.autoConnect("ParadoxController", "")) {
     trc("Failed to initialise onboard access point");
@@ -258,6 +265,7 @@ void setupWiFi() {
   strcpy(mqttServerPort, mqttPort.getValue());
   strcpy(mqttUsername, mqttUser.getValue());
   strcpy(mqttPassword, mqttPass.getValue());
+  strcpy(alarmPin, alarmPinParam.getValue());
 
   if (shouldSaveConfig) {
     trc("Saving configuration");
@@ -267,6 +275,8 @@ void setupWiFi() {
     json[PROPERTY_MQTT_SERVER_PORT] = mqttServerPort;
     json[PROPERTY_MQTT_USERNAME] = mqttUsername;
     json[PROPERTY_MQTT_PASSWORD] = mqttPassword;
+    json[PROPERTY_ALARM_PIN] = alarmPin;
+
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -344,6 +354,7 @@ void readConfig() {
           strcpy(mqttServerPort, json[PROPERTY_MQTT_SERVER_PORT]);
           strcpy(mqttPassword, json[PROPERTY_MQTT_PASSWORD]);
           strcpy(mqttUsername, json[PROPERTY_MQTT_USERNAME]);
+          strcpy(alarmPin, json[PROPERTY_ALARM_PIN]);
         } else {
           trc("Failed to read configuration");
         }
@@ -393,10 +404,11 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void sendCommandToPanel (String partitionZone, String command) {
+  trc("Attempting to send to panel");
   if (!panelInitialised || !pannelConnected) {
     panelInitialised = false;
     pannelConnected = false;
-    doLogin("0000");
+    doLogin(alarmPin);
   }
 
   if (!panelInitialised) {
@@ -419,6 +431,8 @@ void sendCommandToPanel (String partitionZone, String command) {
 
 void doLogin(String password) {
   trc("Initialising panel");
+  trc(password);
+
   char charpass1[4];
   char charpass2[4];
 
@@ -436,33 +450,48 @@ void doLogin(String password) {
   
   byte startCommunicationRequest[FIXED_MESSAGE_SIZE] = {};
   byte initialiseCommunicationRequest[FIXED_MESSAGE_SIZE] = {};
-  byte checksum;
 
-  for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
-    startCommunicationRequest[x] = 0x00;
-    initialiseCommunicationRequest[x] = 0x00;
-  }
+  // byte checksum;
+
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
+  //   startCommunicationRequest[x] = 0x00;
+  //   initialiseCommunicationRequest[x] = 0x00;
+  // }
 
   flushSerialBuffer();
+  initRequest(startCommunicationRequest);
+
   startCommunicationRequest[0] = COMMAND_START_COMMUNICATION;
   startCommunicationRequest[1] = 0x20; // Extra validation byte
+ /*
   startCommunicationRequest[33] = SOURCE_ID_WINLOAD_DIRECT; // Source ID (See table 1)
   startCommunicationRequest[34] = 0x00; // User ID high byte
   startCommunicationRequest[35] = 0x00; // User ID low byte
+*/
+  // startCommunicationRequest[10] = 0x00; // User ID high byte
+  // startCommunicationRequest[11] = 0x00; // User ID low byte
+  // startCommunicationRequest[33] = SOURCE_ID_NEWARE_DIRECT; // Source ID (See table 1)
+  
+  // checksum = 0;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
+  //   checksum += startCommunicationRequest[x];
+  // }
 
-  checksum = 0;
-  for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
-    checksum += startCommunicationRequest[x];
-  }
+  // while (checksum > 255) {
+  //   checksum = checksum - (checksum / 256) * 256;
+  // }
 
-  while (checksum > 255) {
-    checksum = checksum - (checksum / 256) * 256;
-  }
+  // startCommunicationRequest[36] = checksum & 0xFF;
 
-  startCommunicationRequest[36] = checksum & 0xFF;
 
-  Serial.write(startCommunicationRequest, FIXED_MESSAGE_SIZE);
+  // Serial.write(startCommunicationRequest, FIXED_MESSAGE_SIZE);
+  
+  
+  sendMessageToSerial(startCommunicationRequest);  
+  trc((char*) startCommunicationRequest);
   readMessageFromSerial();
+
+  initRequest(initialiseCommunicationRequest);
 
   initialiseCommunicationRequest[0] = COMMAND_INITIALISE_COMMUNICATION;
   initialiseCommunicationRequest[4] = responseMessage[4]; // Panel Product ID
@@ -471,25 +500,44 @@ void doLogin(String password) {
   initialiseCommunicationRequest[7] = responseMessage[7]; // Panel Firmware Build
   initialiseCommunicationRequest[8] = responseMessage[8]; // Programmmed Panel ID Digit 1 & 2 (Not required for NEware)
   initialiseCommunicationRequest[9] = responseMessage[9]; // Programmmed Panel ID Digit 3 & 4 (Not required for NEware)
-  initialiseCommunicationRequest[10] = panelPassword1; // Panel PC Password Digit 1 & 2 (Not required for NEware)
-  initialiseCommunicationRequest[11] = panelPassword2; // Panel PC Password Digit 3 & 4 (Not required for NEware)
-  initialiseCommunicationRequest[13] = 0x00; // Source Mode (old method) 0x00 Winload, 0x55 NEware
-  initialiseCommunicationRequest[33] = SOURCE_ID_WINLOAD_DIRECT; // Source ID (See table 1)
-  initialiseCommunicationRequest[34] = 0x00; // User ID high byte
-  initialiseCommunicationRequest[35] = 0x00; // User ID low byte
+  
+  // initialiseCommunicationRequest[10] = panelPassword1; // Panel PC Password Digit 1 & 2 (Not required for NEware)
+  // initialiseCommunicationRequest[11] = panelPassword2; // Panel PC Password Digit 3 & 4 (Not required for NEware)
+  // initialiseCommunicationRequest[10] = 0x00; // Panel PC Password Digit 1 & 2 (Not required for NEware)
+  // initialiseCommunicationRequest[11] = 0x00; // Panel PC Password Digit 3 & 4 (Not required for NEware)
 
-  checksum = 0;
-  for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
-    checksum += initialiseCommunicationRequest[x];
-  }
+// BEGIn ### From here to end of ### need to set user pin part of byute array message
+  initialiseCommunicationRequest[14] = panelPassword1; // Panel PC Password Digit 1 & 2 (Not required for NEware)
+  initialiseCommunicationRequest[15] = panelPassword2; // Panel PC Password Digit 3 & 4 (Not required for NEware)
+  
+  // initialiseCommunicationRequest[13] = 0x00; // Source Mode (old method) 0x00 Winload, 0x55 NEware
+  initialiseCommunicationRequest[13] = 0x55; // Source Mode (old method) 0x00 Winload, 0x55 NEware
+// END ### end part of message bytes setting for user pin parts 
 
-  while (checksum > 255) {
-    checksum = checksum - (checksum / 256) * 256;
-  }
 
-  initialiseCommunicationRequest[36] = checksum & 0xFF;
 
-  Serial.write(initialiseCommunicationRequest, FIXED_MESSAGE_SIZE);
+  // initialiseCommunicationRequest[33] = SOURCE_ID_WINLOAD_DIRECT; // Source ID (See table 1)
+  // initialiseCommunicationRequest[33] = SOURCE_ID_NEWARE_DIRECT; // Source ID (See table 1)
+  
+  // initialiseCommunicationRequest[34] = 0x00; // User ID high byte
+  // initialiseCommunicationRequest[35] = 0x00; // User ID low byte
+
+  // checksum = 0;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
+  //   checksum += initialiseCommunicationRequest[x];
+  // }
+
+  // while (checksum > 255) {
+  //   checksum = checksum - (checksum / 256) * 256;
+  // }
+
+  // initialiseCommunicationRequest[36] = checksum & 0xFF;
+  
+  // trc((char*) initialiseCommunicationRequest);
+
+  // Serial.write(initialiseCommunicationRequest, FIXED_MESSAGE_SIZE);
+
+  sendMessageToSerial(initialiseCommunicationRequest);
   readMessageFromSerial();
 
   if (responseMessage[0] == COMMAND_INITIALISE_COMMUNICATION_SUCCESSFUL) {
@@ -535,31 +583,40 @@ boolean performAction(byte action, byte partitionZone) {
   }
   
   byte performActionRequest[FIXED_MESSAGE_SIZE] = {};
-  byte checksum;
-  for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
-    performActionRequest[x] = 0x00;
-  }
-
+  // byte checksum;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
+  //   performActionRequest[x] = 0x00;
+  // }
+  initRequest(performActionRequest);
   performActionRequest[0] = COMMAND_PERFORM_ACTION;
   performActionRequest[2] = action; // Action
   performActionRequest[3] = partitionZone; // Partition or Zone number
+/*
   performActionRequest[33] = SOURCE_ID_WINLOAD_DIRECT;
   performActionRequest[34] = 0x00; // User ID high byte
   performActionRequest[35] = 0x00; // User ID low byte
-  checksum = 0;
+  */
+  // performActionRequest[10] = 0x00; // User ID high byte
+  // performActionRequest[11] = 0x00; // User ID low byte
+  // performActionRequest[33] = SOURCE_ID_NEWARE_DIRECT; // Source ID (See table 1)
+ 
+  // checksum = 0;
 
-  for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
-    checksum += performActionRequest[x];
-  }
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
+  //   checksum += performActionRequest[x];
+  // }
 
-  while (checksum > 255) {
-    checksum = checksum - (checksum / 256) * 256;
-  }
+  // while (checksum > 255) {
+  //   checksum = checksum - (checksum / 256) * 256;
+  // }
 
-  performActionRequest[36] = checksum & 0xFF;
+  // performActionRequest[36] = checksum & 0xFF;
 
+  // Serial.write(performActionRequest, FIXED_MESSAGE_SIZE);
+  
+  
   trc("Sending perform action request");
-  Serial.write(performActionRequest, FIXED_MESSAGE_SIZE);
+  sendMessageToSerial(performActionRequest);
   readMessageFromSerial();
 
   if (responseMessage[0] >= 40 && responseMessage[0] <= 45) {
@@ -569,32 +626,63 @@ boolean performAction(byte action, byte partitionZone) {
   return false;
 }
 
-void systemStatus1() {
-  byte systemStatusOneRequest[FIXED_MESSAGE_SIZE] = {};
-  byte checksum;
+
+void initRequest(byte* request){
+  // byte request[FIXED_MESSAGE_SIZE] = {};
+  // byte checksum;
+
   for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
-    systemStatusOneRequest[x] = 0x00;
+    request[x] = 0x00;
   }
 
+  // Here we should handle two firmware diffenerences in message structure
+  if (firmware == SOURCE_ID_NEWARE_DIRECT){ 
+    request[10] = 0x00; // User ID high byte
+    request[11] = 0x00; // User ID low byte
+    request[33] = SOURCE_ID_NEWARE_DIRECT; // Source ID (See table 1)
+  } 
+  else {
+    request[33] = SOURCE_ID_WINLOAD_DIRECT;
+    request[34] = 0x00; // User ID high byte
+    request[35] = 0x00; // User ID low byte
+  }
+  
+//  return request;
+}
+
+void systemStatus1() {
+  byte systemStatusOneRequest[FIXED_MESSAGE_SIZE] = {};
+  // byte checksum;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
+  //   systemStatusOneRequest[x] = 0x00;
+  // }
+
+  initRequest(systemStatusOneRequest);
   systemStatusOneRequest[0] = COMMAND_PANEL_STATUS_1;
   systemStatusOneRequest[2] = 0x80; // Validation to distinguish from Eeprom read.
   systemStatusOneRequest[3] = STATUS_REQUEST_1_SYSTEM;
+ /*
   systemStatusOneRequest[33] = SOURCE_ID_WINLOAD_DIRECT;
   systemStatusOneRequest[34] = 0x00; // User ID high byte
   systemStatusOneRequest[35] = 0x00; // User ID low byte
+*/
+  // systemStatusOneRequest[10] = 0x00; // User ID high byte
+  // systemStatusOneRequest[11] = 0x00; // User ID low byte
+  // systemStatusOneRequest[33] = SOURCE_ID_NEWARE_DIRECT; // Source ID (See table 1)
 
-  checksum = 0;
-  for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
-    checksum += systemStatusOneRequest[x];
-  }
+  // checksum = 0;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
+  //   checksum += systemStatusOneRequest[x];
+  // }
 
-  while (checksum > 255) {
-    checksum = checksum - (checksum / 256) * 256;
-  }
+  // while (checksum > 255) {
+  //   checksum = checksum - (checksum / 256) * 256;
+  // }
 
-  systemStatusOneRequest[36] = checksum & 0xFF;
+  // systemStatusOneRequest[36] = checksum & 0xFF;
 
-  Serial.write(systemStatusOneRequest, FIXED_MESSAGE_SIZE);
+  // Serial.write(systemStatusOneRequest, FIXED_MESSAGE_SIZE);
+  sendMessageToSerial(systemStatusOneRequest);
   readMessageFromSerial();
 
   if ((responseMessage[0] & 0xF0) == COMMAND_PANEL_STATUS_1) {
@@ -615,29 +703,36 @@ void systemStatus1() {
 
 void closeConnection() {
   byte closeConnectionRequest[FIXED_MESSAGE_SIZE] = {};
-  byte checksum;
-  for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
-    closeConnectionRequest[x] = 0x00;
-  }
-
+  // byte checksum;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE; x++) {
+  //   closeConnectionRequest[x] = 0x00;
+  // }
+  initRequest(closeConnectionRequest);
   closeConnectionRequest[0] = COMMAND_CLOSE_CONNECTION;
   closeConnectionRequest[2] = 0x05; // Validation byte
+  /*
   closeConnectionRequest[33] = SOURCE_ID_WINLOAD_DIRECT;
   closeConnectionRequest[34] = 0x00; // User ID high byte
   closeConnectionRequest[35] = 0x00; // User ID low byte
+*/
+  // closeConnectionRequest[10] = 0x00; // User ID high byte
+  // closeConnectionRequest[11] = 0x00; // User ID low byte
+  // closeConnectionRequest[33] = SOURCE_ID_NEWARE_DIRECT; // Source ID (See table 1)
 
-  checksum = 0;
-  for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
-    checksum += closeConnectionRequest[x];
-  }
+  // checksum = 0;
+  // for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
+  //   checksum += closeConnectionRequest[x];
+  // }
 
-  while (checksum > 255) {
-    checksum = checksum - (checksum / 256) * 256;
-  }
+  // while (checksum > 255) {
+  //   checksum = checksum - (checksum / 256) * 256;
+  // }
 
-  closeConnectionRequest[36] = checksum & 0xFF;
+  // closeConnectionRequest[36] = checksum & 0xFF;
 
-  Serial.write(closeConnectionRequest, FIXED_MESSAGE_SIZE);
+  // Serial.write(closeConnectionRequest, FIXED_MESSAGE_SIZE);
+  
+  sendMessageToSerial(closeConnectionRequest);
   readMessageFromSerial();
 }
 
@@ -668,14 +763,42 @@ void readMessageFromSerial() {
     yield(); 
   }
 
-  byte positionIndex = 0;
+// use overload instead of looping 
+  Serial.read(responseMessage, FIXED_MESSAGE_SIZE);
+  // byte positionIndex = 0;
 
-  while (positionIndex < FIXED_MESSAGE_SIZE) {
-    responseMessage[positionIndex++] = Serial.read();
+  // while (positionIndex < FIXED_MESSAGE_SIZE) {
+  //   responseMessage[positionIndex++] = Serial.read();
+  // }
+  trc(String("responseMessageFromSerial here"));
+  // responseMessage[++positionIndex] = 0x00;
+  responseMessage[FIXED_MESSAGE_SIZE] = 0x00;
+  
+  trc(responseMessage);
+  
+}
+
+
+void sendMessageToSerial(byte *request) {
+  // there will be logic to handle two firmeware packets for user pin.
+
+
+
+  word checksum = 0;
+  for (int x = 0; x < FIXED_MESSAGE_SIZE - 1; x++) {
+    checksum += request[x];
   }
 
-  responseMessage[++positionIndex] = 0x00;
+  while (checksum > 255) {
+    checksum = checksum - (checksum / 256) * 256;
+  }
+
+  request[FIXED_MESSAGE_SIZE-1] = checksum & 0xFF;
+
+  Serial.write(request, FIXED_MESSAGE_SIZE);
+
 }
+
 
 void sendJsonString (byte command, byte eventGroupNumber, byte eventSubGroupNumber, byte partition, String label) {
   if (eventGroupNumber == EVENT_GROUP_PARTITION_STATUS) {
@@ -760,6 +883,19 @@ void trc(String msg) {
         sendMQTT(mqttTopicLog, msg);
     }
 }
+
+void trc(char* stuff){
+  char commandHex[2*37+1];
+  char thing[2];
+  for (int i=0; i<37; i++){
+    sprintf(thing, "%02X", stuff[i]);  
+    commandHex[2*i] = thing[0];
+    commandHex[2*i+1] = thing[1];
+  }
+  commandHex[2*37] = 0;
+
+  trc(String(commandHex));
+  }
 
 void blink(int duration) {
   digitalWrite(LED_BUILTIN, LOW);
